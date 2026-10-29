@@ -1,0 +1,118 @@
+name: Build and release CopyPro Tools
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libvips
+        shell: pwsh
+        run: |
+          $url = "https://github.com/libvips/build-win64-mxe/releases/download/v8.18.7/vips-dev-x64-web-8.18.7.zip"
+          Invoke-WebRequest $url -OutFile vips.zip
+          Expand-Archive vips.zip -DestinationPath vips-dist
+          $bin = Get-ChildItem -Recurse -Directory vips-dist | Where-Object { $_.Name -eq "bin" } | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value $bin.FullName
+          "VIPS_BIN=$($bin.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create version file
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          if (-not $version) { $version = "0.0.0-dev" }
+          @{ version = $version } | ConvertTo-Json | Set-Content -Encoding UTF8 version.json
+
+      - name: Build updater
+        shell: cmd
+        run: |
+          pyinstaller --clean --noconfirm --onefile --noconsole ^
+            --name "CopyPro Updater" ^
+            copypro_updater.py
+
+      - name: Build application
+        shell: cmd
+        run: |
+          pyinstaller --clean --noconfirm --onedir --noconsole ^
+            --name "CopyPro Tools" ^
+            --icon "icon_transparent.ico" ^
+            --collect-all tkinterdnd2 ^
+            --collect-all pillow_heif ^
+            --collect-all fitz ^
+            --collect-all cv2 ^
+            --collect-all PySide6 ^
+            --collect-all pyvips ^
+            --hidden-import copypro_tools ^
+            --hidden-import copypro_update_support ^
+            --add-data "data\copypro_kodai.xlsx;." ^
+            --add-data "data\copypro_popieriaus_dydziai.xlsx;." ^
+            --add-data "update_config.json;." ^
+            --add-data "version.json;." ^
+            copypro_workstation.py
+
+      - name: Add updater and editable data
+        shell: pwsh
+        run: |
+          Copy-Item "dist\CopyPro Updater.exe" "dist\CopyPro Tools\CopyPro Updater.exe"
+          Copy-Item "data\copypro_kodai.xlsx" "dist\CopyPro Tools\copypro_kodai.xlsx"
+          Copy-Item "data\copypro_popieriaus_dydziai.xlsx" "dist\CopyPro Tools\copypro_popieriaus_dydziai.xlsx"
+          Copy-Item "update_config.json" "dist\CopyPro Tools\update_config.json"
+          Copy-Item "version.json" "dist\CopyPro Tools\version.json"
+          Copy-Item "$env:VIPS_BIN\*.dll" "dist\CopyPro Tools\"
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\CopyPro Tools\*" `
+            -DestinationPath "CopyPro-Tools-Windows.zip" -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          if (-not $version) { $version = "0.0.0-dev" }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$version" `
+            "installer\CopyProTools.iss"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CopyPro-Tools-Windows
+          path: |
+            CopyPro-Tools-Windows.zip
+            Output\CopyPro-Tools-Setup.exe
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            CopyPro-Tools-Windows.zip
+            Output/CopyPro-Tools-Setup.exe
+          generate_release_notes: true

@@ -1,0 +1,10 @@
+Pillow
+pillow-heif
+PyMuPDF>=1.23,<2
+tkinterdnd2
+pyinstaller
+openpyxl
+numpy
+opencv-python-headless
+PySide6
+pyvips
