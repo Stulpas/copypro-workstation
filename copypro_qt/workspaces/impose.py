@@ -50,8 +50,8 @@ from copypro_qt.legacy import ct
 from copypro_qt.media import expand, sources_of
 from copypro_qt.paper import paper_mm, paper_names, paper_size_raw
 from copypro_qt.widgets import (
-    CropView, button, choose_files, choose_save, group_card, ingest_paths, labeled, muted,
-    pair, pixmap_from_pil, polish, section,
+    CropView, button, choose_files, choose_save, group_card, harden_value_widget, ingest_paths,
+    labeled, mode_combo, muted, pair, pixmap_from_pil, polish, section,
 )
 from copypro_qt.workers import run_bg
 
@@ -871,7 +871,7 @@ class ImposeWorkspace:
         form = QVBoxLayout(body)
         form.setContentsMargins(8, 8, 8, 8)
         form.setSpacing(8)
-        self.mode = QComboBox()
+        self.mode = mode_combo()
         self.mode.addItems(["Print layout", "Booklet", "Polaroid", "Collage", "Sticker outline"])
         self.mode.currentIndexChanged.connect(self._switch)
         form.addWidget(self.mode)
@@ -962,6 +962,7 @@ class ImposeWorkspace:
             page.setMinimumWidth(0)
             page.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         for combo in self.inspector.findChildren(QComboBox):
+            harden_value_widget(combo)
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(0)
             combo.setMinimumWidth(0)
@@ -970,6 +971,7 @@ class ImposeWorkspace:
             view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             view.setTextElideMode(Qt.ElideRight)
         for spin in self.inspector.findChildren(QAbstractSpinBox):
+            harden_value_widget(spin)
             spin.setMinimumWidth(0)
             spin.setSizePolicy(field)
 
@@ -1048,7 +1050,7 @@ class ImposeWorkspace:
         return combo
 
     def _spin(self, value, step=1, maximum=2000):
-        spin = QDoubleSpinBox()
+        spin = harden_value_widget(QDoubleSpinBox())
         spin.setRange(0, maximum)
         spin.setDecimals(2)
         spin.setValue(value)
@@ -1057,7 +1059,7 @@ class ImposeWorkspace:
         return spin
 
     def _mm_spin(self, value, maximum=2000):
-        spin = QDoubleSpinBox()
+        spin = harden_value_widget(QDoubleSpinBox())
         spin.setRange(0, maximum)
         spin.setDecimals(0)
         spin.setValue(value)

@@ -23,7 +23,10 @@ from PySide6.QtWidgets import (
 
 from copypro_qt.engines import documents as doc_engine
 from copypro_qt.legacy import ct
-from copypro_qt.widgets import button, choose_files, choose_save, group_card, ingest_paths, labeled, muted, section
+from copypro_qt.widgets import (
+    button, choose_files, choose_save, group_card, harden_value_widget, ingest_paths, labeled,
+    muted, section,
+)
 from copypro_qt.workers import run_bg
 
 
@@ -133,7 +136,7 @@ class ScansWorkspace:
         self.sensitivity.setValue(22)
         self.sense_label = muted("Detection sensitivity: 22")
         self.sensitivity.valueChanged.connect(lambda v: self.sense_label.setText(f"Detection sensitivity: {v}"))
-        self.min_area = QDoubleSpinBox()
+        self.min_area = harden_value_widget(QDoubleSpinBox())
         self.min_area.setRange(0.1, 20)
         self.min_area.setValue(0.8)
         self.straighten = QCheckBox("Straighten detected photos")

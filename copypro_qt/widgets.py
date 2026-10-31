@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -21,6 +24,128 @@ from PySide6.QtWidgets import (
 
 from copypro_qt.imaging import fit_box, refit_fractions
 from copypro_qt.theme import ACCENT, ACCENT2, TEXT
+
+# Controls whose value must not change when the mouse wheel rolls over them unfocused.
+_WHEEL_GUARD_TYPES = (QAbstractSpinBox, QComboBox)
+_WHEEL_GUARD_PROP = "_cpWheelGuard"
+
+
+class WheelFocusGuard(QObject):
+    """Block wheel value changes on unfocused spins/combos; keep panel scrolling.
+
+    QAbstractSpinBox / QComboBox default to Qt.WheelFocus, so a hover wheel both
+    steals focus and steps the value — which eats the inspector QScrollArea wheel.
+    This guard:
+      1. Forces StrongFocus (and on internal QLineEdit children) on show/polish
+      2. Ignores Wheel when the control is not focused
+      3. Applies the delta to the enclosing QAbstractScrollArea scrollbar instead
+    """
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+
+        # Late-created inspector controls — harden as soon as they appear.
+        if et == QEvent.Type.ChildAdded:
+            child = event.child()
+            if isinstance(child, QWidget):
+                self._harden(child)
+            return False
+        if et in (QEvent.Type.Show, QEvent.Type.Polish):
+            self._harden(obj)
+            return False
+
+        if et != QEvent.Type.Wheel:
+            return False
+
+        target = self._guarded(obj)
+        if target is None:
+            return False
+
+        self._harden(target)
+        # hasFocus() is true when the spin's internal line edit holds focus.
+        if target.hasFocus():
+            return False
+
+        self._scroll_enclosing(target, event)
+        return True
+
+    def _harden(self, obj):
+        """Force click/tab focus and watch the widget (+ editor) directly."""
+        if not isinstance(obj, _WHEEL_GUARD_TYPES):
+            return
+        obj.setFocusPolicy(Qt.StrongFocus)
+        if not obj.property(_WHEEL_GUARD_PROP):
+            obj.setProperty(_WHEEL_GUARD_PROP, True)
+            obj.installEventFilter(self)
+        line = obj.lineEdit() if hasattr(obj, "lineEdit") else None
+        if line is None:
+            return
+        line.setFocusPolicy(Qt.StrongFocus)
+        if not line.property(_WHEEL_GUARD_PROP):
+            line.setProperty(_WHEEL_GUARD_PROP, True)
+            line.installEventFilter(self)
+
+    @staticmethod
+    def _guarded(obj):
+        widget = obj if isinstance(obj, QWidget) else None
+        line_edit = None
+        while widget is not None:
+            # Prefer the spin/combo over an internal QLineEdit editor.
+            if isinstance(widget, _WHEEL_GUARD_TYPES):
+                return widget
+            if line_edit is None and isinstance(widget, QLineEdit):
+                line_edit = widget
+            widget = widget.parentWidget()
+        return line_edit
+
+    @staticmethod
+    def _scroll_enclosing(widget, event):
+        """Move the nearest scroll area by the wheel delta (trackpad + mouse)."""
+        parent = widget.parentWidget() if isinstance(widget, QWidget) else None
+        scroll = None
+        while parent is not None:
+            if isinstance(parent, QAbstractScrollArea):
+                scroll = parent
+                break
+            parent = parent.parentWidget()
+        if scroll is None:
+            return
+        delta = event.pixelDelta()
+        dy = delta.y() if not delta.isNull() else event.angleDelta().y()
+        dx = delta.x() if not delta.isNull() else event.angleDelta().x()
+        if event.modifiers() & Qt.ShiftModifier:
+            dx, dy = dy, dx
+        if dy:
+            bar = scroll.verticalScrollBar()
+            bar.setValue(bar.value() - dy)
+        if dx:
+            bar = scroll.horizontalScrollBar()
+            bar.setValue(bar.value() - dx)
+
+
+def install_wheel_focus_guard(app: QApplication) -> WheelFocusGuard:
+    """Install an app-wide filter so unfocused value controls ignore the mouse wheel."""
+    guard = WheelFocusGuard(app)
+    app.installEventFilter(guard)
+    return guard
+
+
+def mode_combo(parent=None):
+    """Primary workspace mode/category dropdown (styled via QComboBox#modeCombo)."""
+    combo = QComboBox(parent)
+    combo.setObjectName("modeCombo")
+    combo.setFocusPolicy(Qt.StrongFocus)
+    return combo
+
+
+def harden_value_widget(widget):
+    """Apply StrongFocus so wheel-over does not focus/step the control."""
+    if isinstance(widget, _WHEEL_GUARD_TYPES):
+        widget.setFocusPolicy(Qt.StrongFocus)
+        line = widget.lineEdit() if hasattr(widget, "lineEdit") else None
+        if line is not None:
+            line.setFocusPolicy(Qt.StrongFocus)
+    return widget
 
 
 def section(text):

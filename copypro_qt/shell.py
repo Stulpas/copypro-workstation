@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from copypro_qt.legacy import ct
 from copypro_qt.theme import STYLESHEET
-from copypro_qt.widgets import button, polish, section
+from copypro_qt.widgets import button, install_wheel_focus_guard, polish, section
 
 _ASSETS = os.path.join(os.path.dirname(__file__), "assets")
 _ICON_SIZE = QSize(22, 22)
@@ -143,6 +143,9 @@ class Workstation(QMainWindow):
         self._rail_buttons = {}
         self._build()
         self.setStyleSheet(STYLESHEET)
+        app = QApplication.instance()
+        if app is not None:
+            self._wheel_guard = install_wheel_focus_guard(app)
         self.show_workspace("photos")
         if ct.DATA_LOAD_ERROR:
             self.report(ct.DATA_LOAD_ERROR)

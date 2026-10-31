@@ -25,7 +25,10 @@ from PySide6.QtWidgets import (
 
 from copypro_qt.engines import documents as docs
 from copypro_qt.legacy import ct
-from copypro_qt.widgets import OutputOptions, button, choose_files, choose_folder, group_card, ingest_paths, labeled, muted, section
+from copypro_qt.widgets import (
+    OutputOptions, button, choose_files, choose_folder, group_card, harden_value_widget,
+    ingest_paths, labeled, mode_combo, muted, section,
+)
 from copypro_qt.workers import run_bg
 
 
@@ -53,7 +56,7 @@ class DocumentsWorkspace:
         form = QVBoxLayout(body)
         form.setContentsMargins(8, 8, 8, 8)
         form.setSpacing(8)
-        self.mode = QComboBox()
+        self.mode = mode_combo()
         self.mode.addItems(["Process", "Page counter"])
         self.mode.currentIndexChanged.connect(self._switch)
         form.addWidget(self.mode)
@@ -116,10 +119,10 @@ class DocumentsWorkspace:
         page = QWidget()
         form = QVBoxLayout(page)
         form.setContentsMargins(0, 0, 0, 0)
-        self.dpi = QComboBox()
+        self.dpi = harden_value_widget(QComboBox())
         self.dpi.addItems([str(v) for v in ct.DPI_OPTIONS])
         self.dpi.setCurrentText("150")
-        self.quality = QSpinBox()
+        self.quality = harden_value_widget(QSpinBox())
         self.quality.setRange(10, 100)
         self.quality.setValue(80)
         self.flatten = QCheckBox("Flatten")

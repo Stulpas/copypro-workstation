@@ -30,7 +30,8 @@ from copypro_qt import imaging
 from copypro_qt.legacy import ct
 from copypro_qt.paper import paper_names, resolve_dir, target_px
 from copypro_qt.widgets import (
-    CropView, OutputOptions, button, choose_files, group_card, ingest_paths, labeled, muted, pair, section,
+    CropView, OutputOptions, button, choose_files, group_card, harden_value_widget, ingest_paths,
+    labeled, mode_combo, muted, pair, section,
 )
 from copypro_qt.workers import run_bg
 
@@ -149,11 +150,13 @@ class PhotosWorkspace:
     def _shrink_fields(self):
         field = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         for combo in self.inspector.findChildren(QComboBox):
+            harden_value_widget(combo)
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(0)
             combo.setMinimumWidth(0)
             combo.setSizePolicy(field)
         for spin in self.inspector.findChildren(QAbstractSpinBox):
+            harden_value_widget(spin)
             spin.setMinimumWidth(0)
             spin.setSizePolicy(field)
         for edit in self.inspector.findChildren(QLineEdit):
@@ -172,7 +175,7 @@ class PhotosWorkspace:
         layout = QVBoxLayout(body)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-        self.mode = QComboBox()
+        self.mode = mode_combo()
         self.mode.addItems(["Resize", "Convert"])
         self.mode.currentIndexChanged.connect(self._toggle_mode)
         layout.addWidget(self.mode)

@@ -126,6 +126,16 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTe
 QComboBox {{
     padding: 5px 28px 5px 8px;
 }}
+QComboBox#modeCombo {{
+    border: 2px solid {ACCENT};
+    font-weight: 600;
+}}
+QComboBox#modeCombo:focus {{
+    border: 2px solid {ACCENT2};
+}}
+QComboBox#modeCombo::drop-down {{
+    border-left: 1px solid {ACCENT};
+}}
 QComboBox::drop-down {{
     subcontrol-origin: padding;
     subcontrol-position: top right;
