@@ -63,10 +63,17 @@ jobs:
             --collect-all cv2 ^
             --collect-all PySide6 ^
             --collect-all pyvips ^
+            --collect-all copypro_qt ^
+            --collect-submodules copypro_qt ^
+            --hidden-import copypro_qt ^
+            --hidden-import copypro_qt.shell ^
+            --hidden-import copypro_qt.legacy ^
             --hidden-import copypro_tools ^
             --hidden-import copypro_update_support ^
+            --hidden-import ui_chrome ^
             --add-data "data\copypro_kodai.xlsx;." ^
             --add-data "data\copypro_popieriaus_dydziai.xlsx;." ^
+            --add-data "copypro_qt\assets;copypro_qt\assets" ^
             --add-data "update_config.json;." ^
             --add-data "version.json;." ^
             copypro_workstation.py
