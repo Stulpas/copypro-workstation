@@ -56,27 +56,104 @@ from copypro_qt.widgets import (
 from copypro_qt.workers import run_bg
 
 
+def _windows_acrobat_candidates():
+    """Known install paths plus versioned Adobe folders under Program Files."""
+    roots = [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ]
+    fixed = [
+        os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat DC\Acrobat\Acrobat.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Adobe\Acrobat DC\Acrobat\Acrobat.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat Reader DC\Reader\Acrobat.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Adobe\Acrobat Reader DC\Reader\Acrobat.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat\Acrobat.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Adobe\Reader 11.0\Reader\AcroRd32.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Adobe\Reader 11.0\Reader\AcroRd32.exe"),
+    ]
+    found = []
+    for root in roots:
+        adobe = os.path.join(root, "Adobe")
+        if not os.path.isdir(adobe):
+            continue
+        try:
+            for name in os.listdir(adobe):
+                lower = name.lower()
+                if lower.startswith("acrobat") and "reader" not in lower:
+                    found.append(os.path.join(adobe, name, "Acrobat", "Acrobat.exe"))
+                if "reader" in lower or lower.startswith("acrobat reader"):
+                    found.append(os.path.join(adobe, name, "Reader", "AcroRd32.exe"))
+                    found.append(os.path.join(adobe, name, "Reader", "Acrobat.exe"))
+        except OSError:
+            pass
+    # Registry install paths (Adobe Continuous / Classic).
+    if sys.platform.startswith("win"):
+        try:
+            import winreg
+            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                for base in (
+                    r"SOFTWARE\Adobe\Adobe Acrobat",
+                    r"SOFTWARE\WOW6432Node\Adobe\Adobe Acrobat",
+                    r"SOFTWARE\Adobe\Acrobat Reader",
+                    r"SOFTWARE\WOW6432Node\Adobe\Acrobat Reader",
+                    r"SOFTWARE\Adobe\Adobe Acrobat Reader",
+                    r"SOFTWARE\WOW6432Node\Adobe\Adobe Acrobat Reader",
+                ):
+                    try:
+                        with winreg.OpenKey(hive, base) as key:
+                            i = 0
+                            while True:
+                                try:
+                                    ver = winreg.EnumKey(key, i)
+                                except OSError:
+                                    break
+                                i += 1
+                                for sub in ("InstallPath", r"Installer\InstallPath"):
+                                    try:
+                                        with winreg.OpenKey(key, f"{ver}\\{sub}") as path_key:
+                                            value, _ = winreg.QueryValueEx(path_key, "")
+                                        if value:
+                                            found.append(os.path.join(value, "Acrobat.exe"))
+                                            found.append(os.path.join(value, "AcroRd32.exe"))
+                                            found.append(os.path.join(value, "Acrobat", "Acrobat.exe"))
+                                            found.append(os.path.join(value, "Reader", "AcroRd32.exe"))
+                                    except OSError:
+                                        pass
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+    return fixed + found
+
+
 def open_in_acrobat(path):
-    """Open a PDF in Acrobat. Never hand it to Preview.app."""
+    """Open a PDF in Acrobat when possible.
+
+    Returns 'acrobat', 'default' (Windows shell fallback), or None.
+    """
     if sys.platform == "darwin":
-        for app in ("Adobe Acrobat", "Adobe Acrobat Reader", "Acrobat Reader"):
+        for app in (
+            "Adobe Acrobat", "Adobe Acrobat DC",
+            "Adobe Acrobat Reader", "Adobe Acrobat Reader DC",
+            "Acrobat Reader",
+        ):
             result = subprocess.run(["open", "-a", app, path], capture_output=True)
             if result.returncode == 0:
-                return True
-        return False
+                return "acrobat"
+        return None
     if sys.platform.startswith("win"):
-        candidates = [
-            os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat DC\Acrobat\Acrobat.exe"),
-            os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"),
-            os.path.expandvars(r"%ProgramFiles(x86)%\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"),
-            os.path.expandvars(r"%ProgramFiles%\Adobe\Acrobat\Acrobat.exe"),
-        ]
-        exe = next((item for item in candidates if item and os.path.exists(item)), None)
-        if not exe:
-            return False
-        subprocess.Popen([exe, path])
-        return True
-    return False
+        exe = next((item for item in _windows_acrobat_candidates() if item and os.path.exists(item)), None)
+        if exe:
+            subprocess.Popen([exe, path])
+            return "acrobat"
+        try:
+            os.startfile(path)  # noqa: PTH123 — Windows PDF shell open
+            return "default"
+        except OSError:
+            return None
+    return None
 
 
 class _SheetBoard(QScrollArea):
@@ -856,6 +933,10 @@ class ImposeWorkspace:
         self._reorient_timer.setSingleShot(True)
         self._reorient_timer.setInterval(180)
         self._reorient_timer.timeout.connect(self._reorient_sources_now)
+        self._item_size_timer = QTimer()
+        self._item_size_timer.setSingleShot(True)
+        self._item_size_timer.setInterval(600)
+        self._item_size_timer.timeout.connect(self._item_size_committed)
         self._build()
 
     def _build(self):
@@ -1097,6 +1178,7 @@ class ImposeWorkspace:
         self.layout_preset = QComboBox()
         self.layout_preset.addItems(list(self.print_layouts))
         self.layout_preset.currentTextChanged.connect(self._load_print_layout)
+        self.layout_preset.activated.connect(lambda _i: self._load_print_layout(self.layout_preset.currentText()))
         save_layout = button("Save", "success")
         save_layout.clicked.connect(self._save_print_layout)
         signature = QHBoxLayout()
@@ -1133,8 +1215,18 @@ class ImposeWorkspace:
         self.item_preset.addItem("Actual size")
         self.item_preset.addItems(paper_names())
         self.item_preset.currentTextChanged.connect(self._apply_item_preset)
-        self.item_w = self._mm_spin(90)
-        self.item_h = self._mm_spin(50)
+        self.item_preset.activated.connect(lambda _i: self._apply_item_preset(self.item_preset.currentText()))
+        # Item size: no per-keystroke preview — debounced via _item_size_timer.
+        self.item_w = harden_value_widget(QDoubleSpinBox())
+        self.item_w.setRange(0, 2000)
+        self.item_w.setDecimals(0)
+        self.item_w.setValue(90)
+        self.item_w.setSingleStep(1)
+        self.item_h = harden_value_widget(QDoubleSpinBox())
+        self.item_h.setRange(0, 2000)
+        self.item_h.setDecimals(0)
+        self.item_h.setValue(50)
+        self.item_h.setSingleStep(1)
         self.item_w.valueChanged.connect(self._item_w_changed)
         self.item_h.valueChanged.connect(self._item_h_changed)
         self.chain_row, self.chain_btn = _switch_row("Keep proportions")
@@ -1224,6 +1316,7 @@ class ImposeWorkspace:
         self.book_preset = QComboBox()
         self.book_preset.addItems(list(booklet_engine.PRESETS))
         self.book_preset.currentTextChanged.connect(self._apply_booklet_preset)
+        self.book_preset.activated.connect(lambda _i: self._apply_booklet_preset(self.book_preset.currentText()))
 
         self.book_paper = self._paper_combo()
         self.book_paper.addItem("Custom…")
@@ -1252,6 +1345,9 @@ class ImposeWorkspace:
             if self.book_page_preset.findText(name) < 0:
                 self.book_page_preset.addItem(name)
         self.book_page_preset.currentTextChanged.connect(self._apply_booklet_page_preset)
+        self.book_page_preset.activated.connect(
+            lambda _i: self._apply_booklet_page_preset(self.book_page_preset.currentText())
+        )
         self.book_page_w = self._mm_spin(210)
         self.book_page_h = self._mm_spin(297)
         self.book_page_w.valueChanged.connect(self._booklet_page_changed)
@@ -1477,6 +1573,7 @@ class ImposeWorkspace:
         self.pol_preset = QComboBox()
         self.pol_preset.addItems(list(polaroid_engine.PRESETS))
         self.pol_preset.currentIndexChanged.connect(self._apply_preset)
+        self.pol_preset.activated.connect(lambda _i: self._apply_preset())
         self.pol_paper = self._paper_combo()
         self.pol_space = self._spin(3, 0.5, 40)
         self.pol_auto = self._toggle("Auto rows and columns")
@@ -1948,6 +2045,14 @@ class ImposeWorkspace:
                 self._remove_job, self._duplicate_job,
             )
             self._fit_source_column()
+            # Restore crops immediately from cache so a remove/rebuild does not flash defaults.
+            for job in real:
+                key = job["key"]
+                thumb = self._thumbs.get(key)
+                if thumb is not None and not thumb.isNull():
+                    self.sources.show_image(
+                        key, thumb, self._crop_aspect_for(thumb), self.fractions.get(key),
+                    )
         show = self.mode.currentIndex() != self._CUT and bool(jobs)
         self.source_visible = show
         self.shell.set_source_visible(show)
@@ -1955,7 +2060,7 @@ class ImposeWorkspace:
         for job in jobs:
             if job.get("blank"):
                 continue
-            self._queue_thumb(job, generation)
+            self._queue_thumb(job, generation, auto_orient=False)
 
     def _queue_thumb(self, job, generation, auto_orient=False):
         """Source panel shows native orientation (landscape stays wide). Export still uses rotations."""
@@ -1974,11 +2079,9 @@ class ImposeWorkspace:
 
         def done(result):
             key, data, effective = result
-            previous = int(self.rotations.get(key, 0) or 0)
             if auto_orient:
+                # Keep crop fractions when auto-rotation updates for a new item size.
                 self.rotations[key] = effective
-                if previous != effective:
-                    self.fractions.pop(key, None)
             image = QImage()
             image.loadFromData(data)
             self._thumbs[key] = image
@@ -2093,8 +2196,7 @@ class ImposeWorkspace:
             self._linking_size = True
             self.item_h.setValue(value / max(0.05, self._proportion_ratio))
             self._linking_size = False
-        self._reorient_sources()
-        self._schedule()
+        self._item_size_timer.start()
 
     def _item_h_changed(self, value):
         if self._linking_size or self._loading_layout:
@@ -2103,6 +2205,12 @@ class ImposeWorkspace:
             self._linking_size = True
             self.item_w.setValue(value * self._proportion_ratio)
             self._linking_size = False
+        self._item_size_timer.start()
+
+    def _item_size_committed(self):
+        """Apply width/height after the user pauses typing."""
+        if self._loading_layout:
+            return
         self._reorient_sources()
         self._schedule()
 
@@ -2605,12 +2713,30 @@ class ImposeWorkspace:
                 return booklet_engine.write_pdf(spec, keys, dest)
 
         def done(_count):
-            if open_in_acrobat(dest):
+            how = open_in_acrobat(dest)
+            if how == "acrobat":
                 self.shell.report("Opened in Acrobat")
+            elif how == "default":
+                self.shell.report("Opened with the default PDF app")
             else:
-                self.shell.report("Adobe Acrobat is not installed.")
+                self.shell.report("Could not find Adobe Acrobat.")
 
         self._signals.append(run_bg(work, done, lambda err: self.shell.report(str(err)), self.canvas))
+
+    def _suggested_export_name(self, mode):
+        def slug(text):
+            return (text or "sheet").strip().replace(" ", "_") or "sheet"
+
+        if mode == self._LAYOUT:
+            paper = slug(self.lay_paper.currentText())
+            return f"{paper}_{self.item_w.value():g}x{self.item_h.value():g}.pdf"
+        if mode == self._BOOKLET:
+            return f"booklet_{slug(self.book_paper.currentText())}.pdf"
+        if mode == self._POLAROID:
+            return f"polaroids_{slug(self.pol_paper.currentText())}.pdf"
+        if mode == self._COLLAGE:
+            return f"collage_{slug(self.col_paper.currentText())}.pdf"
+        return "sheet.pdf"
 
     def _export(self):
         mode = self.mode.currentIndex()
@@ -2638,7 +2764,7 @@ class ImposeWorkspace:
                     f"Two pages ({gw:.1f} × {gh:.1f} mm) do not fit the sheet ({pw:.0f} × {ph:.0f} mm).",
                 )
                 return
-        dest = choose_save(self.canvas, "Export", "booklet.pdf" if mode == self._BOOKLET else "sheet.pdf", "PDF (*.pdf)")
+        dest = choose_save(self.canvas, "Export", self._suggested_export_name(mode), "PDF (*.pdf)")
         if not dest:
             return
         self.export_btn.setEnabled(False)

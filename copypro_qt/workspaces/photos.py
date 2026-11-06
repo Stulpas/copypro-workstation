@@ -104,9 +104,11 @@ class _Card(QFrame):
             index = self.size.findText(override)
             if index >= 0:
                 self.size.setCurrentIndex(index)
-        self.size.currentTextChanged.connect(
-            lambda text: on_size(item, None if text == "Global" else text)
-        )
+        def apply_size(text):
+            on_size(item, None if text == "Global" else text)
+
+        self.size.currentTextChanged.connect(apply_size)
+        self.size.activated.connect(lambda _index: apply_size(self.size.currentText()))
         layout.addWidget(self.size)
         row = QHBoxLayout()
         left = button("↺", "ghost")
@@ -189,9 +191,11 @@ class PhotosWorkspace:
         if "A4" in paper_names():
             self.paper.setCurrentText("A4")
         self.paper.currentIndexChanged.connect(self._paper_changed)
+        self.paper.activated.connect(lambda _index: self._paper_changed())
         self.orientation = QComboBox()
         self.orientation.addItems(["Portrait", "Landscape"])
         self.orientation.currentIndexChanged.connect(self._paper_changed)
+        self.orientation.activated.connect(lambda _index: self._paper_changed())
         self.dpi = QComboBox()
         self.dpi.addItems([str(v) for v in ct.DPI_OPTIONS])
         self.dpi.setCurrentText("300")
@@ -384,7 +388,7 @@ class PhotosWorkspace:
         self._generation += 1
         generation = self._generation
         for item in self.items:
-            self._queue_thumb(item, generation)
+            self._queue_thumb(item, generation, match_orient=True)
 
     def _match_orientation(self, item, image_w, image_h):
         """Auto-rotate so the photo matches target portrait/landscape."""
@@ -491,7 +495,7 @@ class PhotosWorkspace:
         self._generation += 1
         generation = self._generation
         if self.mode.currentIndex() == 0:
-            self._rebuild_cards(generation)
+            self._rebuild_cards(generation, match_orient=True)
             self._rebuild_list(generation)
         else:
             self._clear_grid()
@@ -501,7 +505,7 @@ class PhotosWorkspace:
         self.source_visible = count > 0
         self.shell.set_source_visible(self.source_visible)
 
-    def _rebuild_cards(self, generation):
+    def _rebuild_cards(self, generation, match_orient=True):
         self._clear_grid()
         self._cards = {}
         side = self._side()
@@ -513,7 +517,7 @@ class PhotosWorkspace:
             )
             card.set_side(side)
             self._cards[item["key"]] = card
-            self._queue_thumb(item, generation)
+            self._queue_thumb(item, generation, match_orient=match_orient)
         self._apply_scale()
 
     def _rebuild_list(self, generation):
@@ -541,7 +545,7 @@ class PhotosWorkspace:
             self.file_list.setItemWidget(row, cell)
             self._queue_icon(item, generation)
 
-    def _queue_thumb(self, item, generation, aspect=None):
+    def _queue_thumb(self, item, generation, aspect=None, match_orient=True):
         aspect = aspect if aspect is not None else self._item_aspect(item)
 
         def work():
@@ -556,8 +560,9 @@ class PhotosWorkspace:
                 return
             image = QImage()
             image.loadFromData(data)
-            # Match native image orientation to target before applying rotation.
-            self._match_orientation(item, image.width(), image.height())
+            # Rematch only when the target size changed — never wipe crops on list rebuild/remove.
+            if match_orient:
+                self._match_orientation(item, image.width(), image.height())
             if item["rotation"]:
                 from PySide6.QtGui import QTransform
                 image = image.transformed(QTransform().rotate(item["rotation"]))
@@ -596,7 +601,7 @@ class PhotosWorkspace:
     def _set_item_size(self, item, size_name):
         item["size_name"] = size_name
         # Reload so orientation matches the new per-item target size.
-        self._queue_thumb(item, self._generation)
+        self._queue_thumb(item, self._generation, match_orient=True)
 
     def _remove_item(self, item):
         key = item["key"]
@@ -604,7 +609,19 @@ class PhotosWorkspace:
         self.items = [entry for entry in self.items if entry["key"] != key]
         if not any(entry["path"] == path for entry in self.items):
             self.files = [entry for entry in self.files if entry != path]
-        self._sync()
+        # Rebuild UI but keep stored crops/rotations on remaining items.
+        self._generation += 1
+        generation = self._generation
+        if self.mode.currentIndex() == 0:
+            self._rebuild_cards(generation, match_orient=False)
+            self._rebuild_list(generation)
+        else:
+            self._clear_grid()
+            self._rebuild_list(generation)
+        count = len(self.items)
+        self.status.setText(f"{count} file{'s' if count != 1 else ''}" if count else "")
+        self.source_visible = count > 0
+        self.shell.set_source_visible(self.source_visible)
 
     def _convert_menu(self, pos):
         row = self.file_list.itemAt(pos)
