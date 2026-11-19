@@ -8,3 +8,4 @@ numpy
 opencv-python-headless
 PySide6
 pyvips
+python-barcode

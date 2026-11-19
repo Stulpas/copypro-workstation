@@ -62,12 +62,23 @@ class WheelFocusGuard(QObject):
             return False
 
         self._harden(target)
+        # Open combo popup must keep its own list scroll — do not steal for the inspector.
+        if isinstance(target, QComboBox) and self._combo_popup_open(target):
+            return False
         # hasFocus() is true when the spin's internal line edit holds focus.
         if target.hasFocus():
             return False
 
         self._scroll_enclosing(target, event)
         return True
+
+    @staticmethod
+    def _combo_popup_open(combo: QComboBox) -> bool:
+        view = combo.view()
+        if view is None:
+            return False
+        window = view.window()
+        return bool(view.isVisible() or (window is not None and window.isVisible() and window is not combo.window()))
 
     def _harden(self, obj):
         """Force click/tab focus and watch the widget (+ editor) directly."""

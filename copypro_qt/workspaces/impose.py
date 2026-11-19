@@ -10,7 +10,7 @@ import time
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import (
-    QColor, QIcon, QImage, QKeySequence, QPixmap, QShortcut,
+    QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -54,6 +54,35 @@ from copypro_qt.widgets import (
     labeled, mode_combo, muted, pair, pixmap_from_pil, polish, section,
 )
 from copypro_qt.workers import run_bg
+
+
+def _qr_icon(color="#F3F4F6", side=16):
+    """Small QR-style mark for the Duplo button."""
+    image = QImage(side, side, QImage.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing, False)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(color))
+    cell = side / 9.0
+
+    def block(x, y, w=1.0, h=1.0):
+        painter.drawRect(int(round(x * cell)), int(round(y * cell)), max(1, int(round(w * cell))), max(1, int(round(h * cell))))
+
+    def finder(x, y):
+        block(x, y, 3.0, 0.7)
+        block(x, y + 2.3, 3.0, 0.7)
+        block(x, y + 0.7, 0.7, 1.6)
+        block(x + 2.3, y + 0.7, 0.7, 1.6)
+        block(x + 1.15, y + 1.15, 0.7, 0.7)
+
+    finder(0.3, 0.3)
+    finder(5.7, 0.3)
+    finder(0.3, 5.7)
+    for x, y in ((4.3, 4.3), (5.5, 4.3), (6.7, 5.5), (4.3, 6.7), (7.8, 4.3), (5.5, 7.8), (7.8, 7.8), (4.3, 5.5)):
+        block(x, y, 0.75, 0.75)
+    painter.end()
+    return QIcon(QPixmap.fromImage(image))
 
 
 def _windows_acrobat_candidates():
@@ -922,6 +951,19 @@ class ImposeWorkspace:
         self._loading_booklet = False
         self._placements = []
         self.source_visible = False
+        self.duplo = {
+            "barcode": False,
+            "reg": False,
+            "apply": "first",
+            "text": "000",
+            "height": 12.0,
+            "quiet": 2.0,
+            "show_text": False,
+            "rotation": 0,
+            "h_offset": 0.0,
+            "v_offset": 0.0,
+            "reg_style": "standard",
+        }
         self.inspector = QWidget()
         self.canvas = QWidget()
         self.source_panel = QWidget()
@@ -1181,12 +1223,40 @@ class ImposeWorkspace:
         self.layout_preset.activated.connect(lambda _i: self._load_print_layout(self.layout_preset.currentText()))
         save_layout = button("Save", "success")
         save_layout.clicked.connect(self._save_print_layout)
-        signature = QHBoxLayout()
-        signature.setSpacing(8)
-        signature.addWidget(self.layout_preset, 1)
-        signature.addWidget(save_layout)
-        signature_wrap = QWidget()
-        signature_wrap.setLayout(signature)
+        save_layout.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        save_layout.setStyleSheet(
+            "QPushButton { background: #3B82F6; color: #F3F4F6; font-weight: 700;"
+            " border: none; border-radius: 8px; padding: 4px 10px; }"
+            "QPushButton:hover { background: #60A5FA; }"
+        )
+        side = max(self.layout_preset.sizeHint().height(), save_layout.sizeHint().height(), 28)
+        duplo_btn = QPushButton()
+        duplo_btn.setProperty("role", "secondary")
+        duplo_btn.setIcon(_qr_icon(side=16))
+        duplo_btn.setIconSize(QSize(16, 16))
+        duplo_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        duplo_btn.setCursor(Qt.PointingHandCursor)
+        duplo_btn.setToolTip("Duplo barcode and REG mark")
+        duplo_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #F3F4F6;"
+            " border: 1px solid #3F3F46; border-radius: 8px; padding: 0; }"
+            "QPushButton:hover { background: #27272A; }"
+        )
+        duplo_btn.setFixedSize(side, side)
+        save_layout.setFixedHeight(side)
+        duplo_btn.clicked.connect(self._duplo_dialog)
+        self.layout_preset.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.layout_preset.setFixedHeight(side)
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        preset_row.addWidget(self.layout_preset, 1)
+        preset_row.addWidget(save_layout)
+        preset_row.addWidget(duplo_btn)
+        preset_wrap = QWidget()
+        preset_wrap.setLayout(preset_row)
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        self.duplo_status = muted("")
+        self.duplo_status.hide()
 
         self.lay_mode = QComboBox()
         self.lay_mode.addItems(["Repeat", "Cut & stack", "In order"])
@@ -1269,31 +1339,35 @@ class ImposeWorkspace:
         self.cut_labels.setEnabled(False)
         self.cut_in_bleed.setEnabled(False)
 
-        layout_fields = QWidget()
-        layout_stack = QVBoxLayout(layout_fields)
-        layout_stack.setContentsMargins(0, 0, 0, 0)
-        layout_stack.setSpacing(2)
-        layout_stack.addWidget(_labeled("Layout type", self.lay_mode))
-        layout_stack.addWidget(_labeled("Signature", signature_wrap))
-        form.addWidget(group_card("Layout", layout_fields))
+        self.lay_dpi = QComboBox()
+        self.lay_dpi.addItems(["150", "300", "600"])
+        self.lay_dpi.setCurrentText("300")
+        self.lay_dpi.currentIndexChanged.connect(self._schedule)
+
+        # Same Qt chrome; order matches the old Print layout settings sequence.
+        form.addWidget(group_card("Preset", preset_wrap, self.duplo_status))
         form.addWidget(group_card(
-            "Sheet format",
-            pair(_labeled("Sheet", self.lay_paper), _labeled("Orientation", self.lay_orient)),
+            "Sheet",
+            pair(_labeled("Paper", self.lay_paper), _labeled("Orientation", self.lay_orient)),
             self.custom_paper_row,
+            _labeled("DPI", self.lay_dpi),
+        ))
+        form.addWidget(group_card(
+            "Item & grid",
             _labeled("Page size", self.item_preset),
             pair(_labeled("W", self.item_w), _labeled("H", self.item_h)),
             self.chain_row,
-        ))
-        form.addWidget(group_card(
-            "Grid",
             pair(_labeled("Columns", self.cols), _labeled("Rows", self.rows)),
-            pair(_labeled("Bleed", self.lay_bleed), _labeled("Gap", self.spacing)),
         ))
         form.addWidget(group_card(
-            "Color",
-            pair(_labeled("Color", self.lay_gray), _labeled("Bright", self.brightness)),
+            "Layout type",
+            _labeled("Mode", self.lay_mode),
             self.back_row,
             self.back_file,
+        ))
+        form.addWidget(group_card(
+            "Spacing & bleed",
+            pair(_labeled("Spacing", self.spacing), _labeled("Bleed", self.lay_bleed)),
         ))
         form.addWidget(group_card(
             "Marks",
@@ -1301,6 +1375,10 @@ class ImposeWorkspace:
             self.cut_labels._row,
             self.cut_in_bleed._row,
             spacing=8,
+        ))
+        form.addWidget(group_card(
+            "Color",
+            pair(_labeled("Grayscale", self.lay_gray), _labeled("Brightness", self.brightness)),
         ))
         form.addStretch(1)
         self._load_print_layout(self.layout_preset.currentText())
@@ -2243,7 +2321,7 @@ class ImposeWorkspace:
             "spacing": self.spacing.value(),
             "grayscale": self.lay_gray.isChecked(),
             "brightness": self.brightness.value(),
-            "dpi": 300,
+            "dpi": int(self.lay_dpi.currentText()),
             "cut_marks": self.cut_marks.isChecked(),
             "cut_labels": self.cut_labels.isChecked(),
             "cut_mark_style": "in_bleed" if self.cut_in_bleed.isChecked() else "outside",
@@ -2251,6 +2329,7 @@ class ImposeWorkspace:
             "sources": sources_of(self.jobs),
             "rotations": dict(self.rotations),
             "fractions": dict(self.fractions),
+            "duplo": dict(self.duplo),
         }
 
     def _booklet_paper_mm(self):
@@ -2385,13 +2464,10 @@ class ImposeWorkspace:
             spec = self._spec()
 
             def work():
-                specs = layout_engine.page_specs(
-                    [job["key"] for job in jobs], spec["cols"], spec["rows"], spec["mode"], spec["duplex"], spec["back"],
-                )
                 spec["sources"] = sources_of(jobs)
                 sheets = []
-                for assignments, back, label in specs:
-                    sheet = layout_engine.render_sheet(spec, assignments, back, preview=True)
+                for assignments, back, label, duplo_on in layout_engine.sheet_jobs(spec, [job["key"] for job in jobs]):
+                    sheet = layout_engine.render_sheet(spec, assignments, back, preview=True, duplo_on=duplo_on)
                     sheets.append((label, pixmap_bytes(sheet)))
                 return sheets
 
@@ -2594,7 +2670,7 @@ class ImposeWorkspace:
             "spacing": self.spacing.value(),
             "grayscale": self.lay_gray.isChecked(),
             "brightness": self.brightness.value(),
-            "dpi": 300,
+            "dpi": int(self.lay_dpi.currentText()),
             "paper_w": self.paper_w.value(),
             "paper_h": self.paper_h.value(),
             "cut_marks": self.cut_marks.isChecked(),
@@ -2602,6 +2678,7 @@ class ImposeWorkspace:
             "cut_mark_style": "in_bleed" if self.cut_in_bleed.isChecked() else "outside",
             "proportional": self.chain_btn.isChecked(),
             "proportion_ratio": self._proportion_ratio,
+            "duplo": dict(self.duplo),
         }
 
     def _load_print_layout(self, name):
@@ -2615,6 +2692,7 @@ class ImposeWorkspace:
             self._select_text(self.lay_paper, data.get("paper", "A4"))
             self._sync_custom_paper()
             self._select_text(self.lay_orient, data.get("orientation", "Portrait"))
+            self._select_text(self.lay_dpi, str(int(data.get("dpi", 300) or 300)))
             self.item_preset.blockSignals(True)
             self.item_preset.setCurrentIndex(0)
             self.item_preset.blockSignals(False)
@@ -2638,11 +2716,109 @@ class ImposeWorkspace:
             self.chain_btn.blockSignals(False)
             if self.chain_btn.isChecked() and not self._proportion_ratio:
                 self._proportion_ratio = self.item_w.value() / max(0.1, self.item_h.value())
+            saved = data.get("duplo")
+            if isinstance(saved, dict):
+                self.duplo.update(saved)
+            self._sync_duplo_status()
         finally:
             self._loading_layout = False
         if hasattr(self, "board"):
             self._reorient_sources()
             self._schedule()
+
+    def _sync_duplo_status(self):
+        data = self.duplo
+        if not (data.get("barcode") or data.get("reg")):
+            self.duplo_status.clear()
+            self.duplo_status.hide()
+            return
+        parts = []
+        if data.get("barcode"):
+            parts.append(f"Barcode {data.get('text') or '000'}")
+        if data.get("reg"):
+            parts.append("REG " + ("bold" if data.get("reg_style") == "bold" else "standard"))
+        where = "every sheet" if data.get("apply") == "every" else "first sheet"
+        self.duplo_status.setText(" · ".join(parts) + f" · {where}")
+        self.duplo_status.show()
+
+    def _duplo_dialog(self):
+        dialog = QDialog(self.canvas)
+        dialog.setWindowTitle("Duplo DC-618")
+        dialog.resize(420, 520)
+        root = QVBoxLayout(dialog)
+        root.addWidget(muted("Barcode and optional REG mark for the Duplo DC-618. Cells under the marks are left blank."))
+        barcode_on = QCheckBox("Add barcode")
+        barcode_on.setChecked(bool(self.duplo.get("barcode")))
+        reg_on = QCheckBox("Add REG mark")
+        reg_on.setChecked(bool(self.duplo.get("reg")))
+        apply = QComboBox()
+        apply.addItem("First sheet only", "first")
+        apply.addItem("Every sheet", "every")
+        apply.setCurrentIndex(1 if self.duplo.get("apply") == "every" else 0)
+        text = QLineEdit(str(self.duplo.get("text") or "000"))
+        height = harden_value_widget(QDoubleSpinBox())
+        height.setRange(4, 18)
+        height.setDecimals(1)
+        height.setValue(float(self.duplo.get("height") or 12))
+        height.setSuffix(" mm")
+        quiet = harden_value_widget(QDoubleSpinBox())
+        quiet.setRange(0, 8)
+        quiet.setDecimals(1)
+        quiet.setValue(float(self.duplo.get("quiet") or 2))
+        quiet.setSuffix(" mm")
+        show_text = QCheckBox("Display text")
+        show_text.setChecked(bool(self.duplo.get("show_text")))
+        rotation = QComboBox()
+        rotation.addItems(["0°", "90°", "180°", "270°"])
+        rotation.setCurrentIndex({0: 0, 90: 1, 180: 2, 270: 3}.get(int(self.duplo.get("rotation") or 0), 0))
+        h_off = harden_value_widget(QDoubleSpinBox())
+        v_off = harden_value_widget(QDoubleSpinBox())
+        for spin, key in ((h_off, "h_offset"), (v_off, "v_offset")):
+            spin.setRange(-30, 40)
+            spin.setDecimals(1)
+            spin.setValue(float(self.duplo.get(key) or 0))
+            spin.setSuffix(" mm")
+        reg_style = QComboBox()
+        reg_style.addItem("Standard", "standard")
+        reg_style.addItem("Bold", "bold")
+        reg_style.setCurrentIndex(1 if self.duplo.get("reg_style") == "bold" else 0)
+        root.addWidget(barcode_on)
+        root.addWidget(labeled("Barcode text", text))
+        root.addWidget(pair(labeled("Height", height), labeled("Quiet zone", quiet)))
+        root.addWidget(show_text)
+        root.addWidget(pair(labeled("Rotation", rotation), labeled("Apply to", apply)))
+        root.addWidget(pair(labeled("Horizontal offset", h_off), labeled("Vertical offset", v_off)))
+        root.addWidget(reg_on)
+        root.addWidget(labeled("REG mark", reg_style))
+        actions = QHBoxLayout()
+        cancel = button("Cancel", "secondary")
+        ok = button("Apply", "success")
+        cancel.clicked.connect(dialog.reject)
+        actions.addWidget(cancel)
+        actions.addWidget(ok, 1)
+        root.addLayout(actions)
+
+        def apply_settings():
+            turns = (0, 90, 180, 270)[rotation.currentIndex()]
+            self.duplo = {
+                "barcode": barcode_on.isChecked(),
+                "reg": reg_on.isChecked(),
+                "apply": apply.currentData() or "first",
+                "text": text.text().strip() or "000",
+                "height": height.value(),
+                "quiet": quiet.value(),
+                "show_text": show_text.isChecked(),
+                "rotation": turns,
+                "h_offset": h_off.value(),
+                "v_offset": v_off.value(),
+                "reg_style": reg_style.currentData() or "standard",
+            }
+            self._sync_duplo_status()
+            dialog.accept()
+            self._schedule()
+
+        ok.clicked.connect(apply_settings)
+        dialog.exec()
 
     def _save_print_layout(self):
         name, ok = QInputDialog.getText(

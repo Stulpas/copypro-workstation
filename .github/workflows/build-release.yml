@@ -70,6 +70,9 @@ jobs:
             --hidden-import copypro_qt.legacy ^
             --hidden-import copypro_tools ^
             --hidden-import copypro_update_support ^
+            --hidden-import barcode ^
+            --hidden-import barcode.codex ^
+            --hidden-import barcode.writer ^
             --hidden-import ui_chrome ^
             --add-data "data\copypro_kodai.xlsx;." ^
             --add-data "data\copypro_popieriaus_dydziai.xlsx;." ^

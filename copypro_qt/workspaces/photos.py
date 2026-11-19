@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -188,6 +189,7 @@ class PhotosWorkspace:
         form.setSpacing(8)
         self.paper = QComboBox()
         self.paper.addItems(paper_names())
+        self.paper.addItem("Custom…")
         if "A4" in paper_names():
             self.paper.setCurrentText("A4")
         self.paper.currentIndexChanged.connect(self._paper_changed)
@@ -196,6 +198,21 @@ class PhotosWorkspace:
         self.orientation.addItems(["Portrait", "Landscape"])
         self.orientation.currentIndexChanged.connect(self._paper_changed)
         self.orientation.activated.connect(lambda _index: self._paper_changed())
+        self.custom_size_row = QWidget()
+        custom_row = QHBoxLayout(self.custom_size_row)
+        custom_row.setContentsMargins(0, 0, 0, 0)
+        custom_row.setSpacing(8)
+        self.custom_w = harden_value_widget(QDoubleSpinBox())
+        self.custom_h = harden_value_widget(QDoubleSpinBox())
+        for spin, value in ((self.custom_w, 100), (self.custom_h, 100)):
+            spin.setRange(1, 5000)
+            spin.setDecimals(1)
+            spin.setValue(value)
+            spin.setSuffix(" mm")
+            spin.valueChanged.connect(self._paper_changed)
+        custom_row.addWidget(labeled("Width", self.custom_w), 1)
+        custom_row.addWidget(labeled("Height", self.custom_h), 1)
+        self.custom_size_row.hide()
         self.dpi = QComboBox()
         self.dpi.addItems([str(v) for v in ct.DPI_OPTIONS])
         self.dpi.setCurrentText("300")
@@ -209,6 +226,7 @@ class PhotosWorkspace:
         form.addWidget(group_card(
             "Size",
             pair(labeled("Paper", self.paper), labeled("Orientation", self.orientation)),
+            self.custom_size_row,
             pair(labeled("DPI", self.dpi), labeled("Format", self.resize_fmt)),
             self.quality_label,
             self.quality,
@@ -341,9 +359,12 @@ class PhotosWorkspace:
         self.paper.blockSignals(True)
         self.paper.clear()
         self.paper.addItems(names)
-        if current in names:
+        self.paper.addItem("Custom…")
+        if current in names or current == "Custom…":
             self.paper.setCurrentText(current)
         self.paper.blockSignals(False)
+        if hasattr(self, "custom_size_row"):
+            self.custom_size_row.setVisible(self.paper.currentText() == "Custom…")
 
     def on_tray(self):
         return
@@ -384,6 +405,8 @@ class PhotosWorkspace:
             self._sync()
 
     def _paper_changed(self):
+        if hasattr(self, "custom_size_row"):
+            self.custom_size_row.setVisible(self.paper.currentText() == "Custom…")
         # Rematch orientation + crop aspect for the new global size.
         self._generation += 1
         generation = self._generation
@@ -407,9 +430,20 @@ class PhotosWorkspace:
     def _target(self):
         return self._target_for(None)
 
+    def _custom_pair(self, size_name=None):
+        paper = size_name or self.paper.currentText()
+        if paper != "Custom…":
+            return None
+        return (self.custom_w.value(), self.custom_h.value())
+
     def _target_for(self, size_name):
         paper = size_name or self.paper.currentText()
-        return target_px(paper, int(self.dpi.currentText()), self.orientation.currentText())
+        return target_px(
+            paper,
+            int(self.dpi.currentText()),
+            self.orientation.currentText(),
+            self._custom_pair(size_name),
+        )
 
     def _item_aspect(self, item):
         return self._aspect(item.get("size_name"))
